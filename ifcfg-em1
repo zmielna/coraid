@@ -1,0 +1,14 @@
+# cp to /etc/sysconfig/network-scripts/ifcfg-em1
+# perheps change mac and em1 to reflect your interface ;-)
+DEVICE=em1
+HWADDR=90:b1:1c:00:51:00
+TYPE=Ethernet
+UUID=38d88445-f348-42df-a0e4-6e74397ecd28
+ONBOOT=yes
+NM_CONTROLLED=yes
+BOOTPROTO=none
+IPV6INIT=no
+USERCTL=no
+IPADDR=10.0.0.1
+NETMASK=255.255.255.0
+MTU=9000

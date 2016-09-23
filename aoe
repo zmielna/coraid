@@ -1,0 +1,565 @@
+#! /bin/bash
+### BEGIN INIT INFO
+# Provides:          aoe
+# Required-Start:    $remote_fs $syslog $named $network $time
+# Required-Stop:     $remote_fs $syslog $named $network
+# Should-Start:
+# Should-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Startup script for AoE (driver and tools)
+# Description:       AoE is the ATA over Ethernet storage protocol from Coraid
+### END INIT INFO
+#
+### BEGIN INIT INFO
+# chkconfig: 2345 95 05
+# description: Startup script for AoE (driver and tools)
+### END INIT INFO
+#
+# Install this script in /etc/init.d with the other init scripts.
+#
+# Make it executable:
+#    chmod 755 /etc/init.d/aoe
+#
+# Install symlinks for boot time:
+#    Citrix XenServer see ftp://ftp.alyseo.com/contrib/XenServer/
+#    Debian/Ubuntu GNU/Linux use "update-rc.d aoe defaults"
+#    CentOS/Rhel5 use "chkconfig --add aoe"
+#
+# Written by JBR@Alyseo <support@alyseo.com>:
+# aoe alias ATA over Ethernet from Coraid generic (all in once) init script
+#
+# ChangeLog :
+# 31 Jan 2008: Modified for CentOS/Rhel5/Citrix XenServer
+# 27 Feb 2011: Modified for Debian6 GNU/Linux alias "Squeeze" 
+# 27 Feb 2011: Tested and validated on Ubuntu 10.04 & 10.10
+# 06 Jun 2011: Added CONFIGURATION Section
+# 16 Sep 2011: Small changes and optimisations
+# 28 Nov 2011: Rewrite all the script
+# 28 Nov 2011: Debug mode (see config section)
+# 28 Nov 2011: configure lock file in config section
+# 28 Nov 2011: Improvements for LVM
+# 28 Nov 2011: Improve Errors catching
+# 28 Nov 2011: Validate for Ubuntu 11.10 32/64 bits
+# 23 Jan 2012: Rewrite cmd_exec function (and each calls)
+# 23 Jan 2012: Rewrite kernel_optimize function
+# 23 Jan 2012: Added AOE_IFACE_SPEED in CONFIGURATION Section
+# 23 Jan 2012: Added --debug option as optional 2nd arg.
+# 23 Jan 2012: Improvements for LVM (VG Device Mapper)
+# 23 Jan 2012: Tested on Ubuntu 11.10 64 bits (3.0.0)
+# 23 Jan 2012: Tested on Oracle VM Server 64 bits (2.6.32)
+# 23 Jan 2012: Tested on Debian Squeeze 6.0 64 bits (2.6.32)
+# 09 Apr 2012: Tested on CentOS 6.2 32 and 64 bits (2.6.32)
+# 11 Apr 2012: Added Linux IO Scheduler optimization for AOE LUNs
+# 11 Apr 2012: Added devices mounter for AOE LUNs and LVM LV on AOE LUNs
+# 11 Apr 2012: Added AOE_IO_SHED_MODE in CONFIGURATION Section
+# 11 Apr 2012: Added AOE_MOUNT in CONFIGURATION Section
+# 11 Apr 2012: Tested on Ubuntu 11.10 64bit (3.0.0)
+# 08 Jul 2013: Improvements for LVM
+# 08 Jul 2013: Adding waiting time for IFACEs to be physically UP
+# 08 Jul 2013: Adding aoe-discover
+# 08 Jul 2013: Tested on Debian Wheezy 7.0 64 bits (3.2.0)
+# 08 Jul 2013: Tested on Ubuntu Server 13.04 64 bits (3.8.0)
+
+
+### BEGIN CONFIGURATION
+
+# Interfaces list used for AOE (space separed)
+AOE_IFACE_LIST='em1 em2'
+
+# AOE Interfaces speed (Gigabit : '1G', 10 Gigabit : '10G')
+AOE_IFACE_SPEED='1G'
+
+# MTU Size for AOE Interfaces (default : '1500', Jumbo-Frame : '9000')
+MTU='9000'
+
+# Set LVM to 'YES' to enable the search of "Volume Group" and "Logical Volume" after that the AOE Module has been loaded
+LVM='YES'
+
+# Changing default Linux IO Scheduler mode. May increase performances for certain workloads and data profile.
+# Values can be : 'noop', 'anticipatory', 'deadline' or 'cfq'.
+# Default : 'cfq', Recommanded : 'deadline'
+AOE_IO_SHED_MODE='deadline'
+
+# Mount AOE LUNs for you (based on /etc/fstab)
+# Possible values :
+# NO   : Do Nothing
+# AUTO : Read /etc/fstab, identify AoE devices and mount them (works with LVM Logical Volumes if LVM is set to 'YES')
+# ALL  : Execute a supid 'mount -a'
+AOE_MOUNT='AUTO'
+
+### END CONFIGURATION
+
+
+#######################################################################
+###                                                                 ###
+### REAL BEGINING OF SCRIPT, DO NOT CHANGE ANYTHING UNDER THIS LINE ###
+###          UNLESS YOU REALLY KNOW WHAT YOU ARE DOING ;-)          ###
+###                                                                 ###
+#######################################################################
+
+# Time to wait udevd-work (mknod in /dev) default = 10
+VALSLEEP='10'
+
+# Set PATH, just in case.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# Lock file
+LOCKFILE="/var/run/aoe"
+
+# Debug mode ( 0 = Disable, 1 = Enable )
+# NOTE : Now you can use --debug as second argument to enable the debug mode ;)
+DEBUG='1'
+
+
+# Function to execute a command depending on debug mode
+cmd_exec() {
+
+    local step=${1}
+    local command=${2}
+    local msg_ok=${3}
+    local msg_nok=${4}
+    local err=${5}
+
+
+    if [ ${DEBUG} -eq 1 ]; then
+        echo -e "STEP : ${step}\n COMMAND : ${command}\n OUTPUT : "
+        ${command}
+    else
+        echo -n " ${step} : "
+        ${command} >/dev/null 2>&1
+    fi
+
+    local cmd_return_code=${?}
+
+    if [ ${cmd_return_code} -ne 0 ]; then
+        # If success on ${command}
+
+        [ ${DEBUG} -eq 1 ] && echo -e "\n COMMAND FAIL: ${command}\n CMD RETURN CODE: ${cmd_return_code}\n RESULT : ${msg_nok}\n" || echo ${msg_nok}
+        return ${err}
+    else
+        # If error on ${command}
+
+        [ ${DEBUG} -eq 1 ] && echo -e "RESULT : ${msg_ok}\n" || echo ${msg_ok}
+        return 0
+    fi
+
+}
+
+
+kernel_optimize()
+{
+
+    if [ ${AOE_IFACE_SPEED} = '1G' ]; then
+
+        # Changing Linux kernel to not wait so long before writing backing storage.
+        echo 3 > /proc/sys/vm/dirty_ratio
+        echo 3 > /proc/sys/vm/dirty_background_ratio
+
+        # Buffers
+        echo 131072 > /proc/sys/net/core/rmem_default
+        echo 131072 > /proc/sys/net/core/rmem_max
+        echo 131072 > /proc/sys/net/core/wmem_default
+        echo 131072 > /proc/sys/net/core/wmem_max
+        echo 10000 > /proc/sys/net/core/netdev_max_backlog
+        echo 65536 > /proc/sys/vm/min_free_kbytes
+
+        return 0
+    
+    elif [ ${AOE_IFACE_SPEED} = '10G' ]; then
+
+        # Changing Linux kernel to not wait so long before writing backing storage.
+        echo 3 > /proc/sys/vm/dirty_ratio
+        echo 3 > /proc/sys/vm/dirty_background_ratio
+
+        # Buffers
+        echo 262144 > /proc/sys/net/core/rmem_default
+        echo 262144 > /proc/sys/net/core/rmem_max
+        echo 262144 > /proc/sys/net/core/wmem_default
+        echo 262144 > /proc/sys/net/core/wmem_max
+        echo 10000 > /proc/sys/net/core/netdev_max_backlog
+        echo 262144 > /proc/sys/vm/min_free_kbytes
+
+        return 0
+
+    else
+
+        # return an error, AOE_IFACE_SPEED in the config section is not correctly setted
+        return 1
+
+    fi
+
+}
+
+
+# Function to get the list of AOE LUNs currently viewable
+get_aoe_lun_list()
+{
+
+    local list=$(ls /dev/etherd/ | grep -v p | grep ^e[0-9])
+    echo ${list}
+
+}
+
+
+# Function to change the mode of the Linux IO Scheduler on AOE LUNs
+aoe_ioshed_optimize()
+{
+
+    if [ ${AOE_IO_SHED_MODE} = 'cfq' ] || [ ${AOE_IO_SHED_MODE} = 'noop' ] || [ ${AOE_IO_SHED_MODE} = 'anticipatory' ] || [ ${AOE_IO_SHED_MODE} = 'deadline' ]; then
+
+        for lun in $(get_aoe_lun_list); do
+             echo ${AOE_IO_SHED_MODE} > /sys/block/etherd\!${lun}/queue/scheduler
+        done
+
+        return 0
+
+    else
+
+        # return an error, AOE_IO_SHED_MODE in the config section is not correctly setted
+        return 1
+
+    fi
+}
+
+
+# Function to get the list of AOE Volume Group.
+# Some Linux distributions return a Device Mapper address (/dev/block/<device-map>) in "pvs" command.
+# Some others, the real AOE device name (/dev/etherd/<device>) in "pvs" command.
+# This function return a list for all of them :)
+get_vg_aoe()
+{
+
+    local list1=$(pvs | grep "etherd" | awk '{print $2}')
+    local list2=""
+    local dev_list=$(pvs | grep "/dev/block" | awk '{print $1"  "$2}')
+
+    while read line; do
+
+        local vg=$(echo ${line} | awk '{print $2}')
+        local dev=$(echo ${line} | awk '{print $1}')
+
+        if [ ! -z ${vg} ] && [ ! -z ${dev} ]; then
+
+                readlink ${dev} | grep "etherd" >/dev/null 2>&1
+                if [ ${?} -eq 0 ]; then
+                    local list2=$(echo -e "${list2}\n${vg}")
+                fi
+        fi
+
+    done < <(echo ${dev_list})
+
+    local VG_LIST=$(echo -e "${list1}\n${list2}")
+
+    echo ${VG_LIST}
+
+}
+
+
+# Function to check if a given device is a Logical Volume of an AoE Volume Group
+# ARG1 : The device to check
+# ARG2 : The list of AoE Volume Group (basicaly get_vg_aoe() but it's better to get this list as an argmument)
+is_lvm_on_aoe()
+{
+
+    local dev=${1}
+    local vglist=${2}
+    local vg=$(echo ${dev} | cut -d "/" -f3)
+
+    local ISAOE="NO"
+
+    for i in ${vglist}; do
+        [ ${i} == ${vg} ] && ISAOE="YES"
+    done
+
+    echo ${ISAOE}
+    
+}
+
+
+do_start()
+{
+
+    echo "AOE Module Init"
+    local ERROR=0
+    local STEP=""
+    local COMMAND=""
+    local MSG_OK=""
+    local MSG_NOK=""
+    local ERR=""
+
+    # Network Interfaces Configuration
+    for iface in ${AOE_IFACE_LIST}; do
+        STEP="Setup AOE interface ${iface}" 
+        COMMAND="ifconfig ${iface} mtu ${MTU} up"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=11
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    done
+
+    sleep 5
+
+    # AOE Kernel Module loading
+    if [ ${ERROR} -eq 0 ]; then
+        STEP="Loading AOE Module"
+        COMMAND="modprobe aoe aoe_iflist=\"${AOE_IFACE_LIST}\""
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=12
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" && touch ${LOCKFILE} || ERROR=${?}
+    fi
+
+    # Wait aoe-discover and udev mknod in /dev/etherd
+    if [ ${ERROR} -eq 0 ]; then
+        STEP="Waiting ${VALSLEEP} seconds for AOE Discovery and udevd-work"
+        COMMAND="sleep ${VALSLEEP}"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=13
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    aoe-discover
+
+    # Kernel Optimization (see kernel_optimize() function)
+    if [ ${ERROR} -eq 0 ]; then
+        STEP="Kernel Optimization (${AOE_IFACE_SPEED})"
+        COMMAND="kernel_optimize"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=14
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    # Linux IO Scheduler optimization for AOE LUNs (see aoe_ioshed_optimize() function)
+    if [ ${ERROR} -eq 0 ]; then
+        STEP="Linux IO Scheduler optimization for AOE LUNs (${AOE_IO_SHED_MODE})"
+        COMMAND="aoe_ioshed_optimize"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=15
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    # LVM Volume Group
+    if [ ${ERROR} -eq 0 ] && [ ${LVM} = 'YES' ]; then
+        STEP="Looking for LVM Volume Group"
+        COMMAND="vgscan --ignorelockingfailure --mknodes"
+        MSG_OK="OK"
+        MSG_NOK="Error "
+        ERR=16
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    # LVM Logical Volume
+    if [ ${ERROR} -eq 0 ] && [ ${LVM} = 'YES' ]; then
+        STEP="Looking for LVM Logical Volume"
+        COMMAND="vgchange -aly --ignorelockingfailure"
+        MSG_OK="OK"
+        MSG_NOK="Error "
+        ERR=17
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    # Mount direct AoE devices
+    if [ ${ERROR} -eq 0 ] && [ ${AOE_MOUNT} = 'AUTO' ]; then
+
+        for device in $(cat /etc/fstab | grep -v ^# | grep ^/dev/etherd/ | awk '{print $1}'); do
+            STEP="Mount device ${device}"
+            COMMAND="mount ${device}"
+            MSG_OK="OK"
+            MSG_NOK="Error"
+            ERR=18
+            cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+        done
+    fi
+
+    # Mount LVM Logical Volumes
+    # Permit error 18 to not stopping init in case of misconfiguration in /etc/fstab
+    if ([ ${ERROR} -eq 0 ] || [ ${ERROR} -eq 18 ]) && [ ${AOE_MOUNT} = 'AUTO' ] && [ ${LVM} = 'YES' ]; then
+
+        local vglist=$(get_vg_aoe)
+        for device in $(cat /etc/fstab | grep -v ^# | grep ^/dev/ | awk '{print $1}'); do
+
+            local ISAOE=$(is_lvm_on_aoe "${device}" "${vglist}")
+            if [ ${ISAOE} = "YES" ]; then
+                STEP="Mount LVM LV ${device}"
+                COMMAND="mount ${device}"
+                MSG_OK="OK"
+                MSG_NOK="Error"
+                ERR=19
+                cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+            fi
+        done
+    fi
+
+    # Remount all
+    if [ ${ERROR} -eq 0 ] && [ ${AOE_MOUNT} = 'ALL' ]; then
+        STEP="Remount all"
+        COMMAND="mount -a"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=20
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+    fi
+
+    # END
+    if   [ ${ERROR} -eq 0 ]; then
+        echo "AOE Module Ready" && return 0
+    elif [ ${ERROR} -eq 18 ] || [ ${ERROR} -eq 19 ] || [ ${ERROR} -eq 20 ]; then
+        echo "AOE Module Ready. But i wasn't able to mount some devices. Check your /etc/fstab file" && return ${ERROR}
+    else
+        echo "AOE Module Init Fail" && return ${ERROR}
+    fi
+
+}
+
+
+# Function that stops the daemon/service
+do_stop()
+{
+
+    echo "Stop AOE"
+    local ERROR=0
+    local STEP=""
+    local COMMAND=""
+    local MSG_OK=""
+    local MSG_NOK=""
+    local ERR=""
+
+    # Flush file system buffers
+    # TODO : Usefull Step ??? An umount will flush the FS Buffer automatically
+    STEP="Flush file system buffers"
+    COMMAND="sync"
+    MSG_OK="OK"
+    MSG_NOK="Error"
+    ERR=40
+    cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+
+    # Umount AOE LVM Logical Volume
+    if [ ${ERROR} -eq 0 ] && [ ${LVM} = 'YES' ]; then
+
+        for VG in $(get_vg_aoe); do
+
+            for LV in $(lvs | grep ${VG} | awk '{print $1}'); do
+
+                local IS_OPEN=$(lvdisplay -c /dev/${VG}/${LV} | cut -d ":" -f6) # Get current LV state. (0 = close, 1 = open)
+                if [ ${IS_OPEN} -ne 0 ]; then
+                    STEP="Umount LVM Logical Volume /dev/${VG}/${LV}"
+                    COMMAND="umount /dev/${VG}/${LV}"
+                    MSG_OK="OK"
+                    MSG_NOK="Error, this LV is currently open, must be closed before"
+                    ERR=41
+                    cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+                fi
+
+            done
+        done
+    fi
+
+    # Shutdown AOE LVM Volume Group
+    # Permit error 41 to be able to shutdown VG which are not impacted by error 41
+    if ([ ${ERROR} -eq 0 ] || [ ${ERROR} -eq 41 ]) && [ ${LVM} = 'YES' ]; then 
+
+        for VG in $(get_vg_aoe); do
+
+            local IS_OPEN=$(vgdisplay -c /dev/${VG} | cut -d ":" -f7) # Get the number of open LV on this VG.
+            if [ ${IS_OPEN} -eq 0 ]; then
+                STEP="Shutdown LVM Volume Group /dev/${VG}"
+                COMMAND="vgchange -a n /dev/${VG}"
+                MSG_OK="OK"
+                MSG_NOK="Error"
+                ERR=42
+                cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+            else
+                echo " Shutdown LVM Volume Group /dev/${VG} : Error. At least one LV still open on this VG"
+                ERROR=43
+            fi
+        done
+    fi
+
+    # Umount all AOE LUNs "direct mounts"
+    # Permit error 42 and 43, which are not relatives to this operation.
+    if [ ${ERROR} -eq 0 ] || [ ${ERROR} -eq 42 ] || [ ${ERROR} -eq 43 ]; then
+        for ETHERDEV in $(cat /etc/mtab | grep "^/dev/etherd" | awk '{print $1}'); do
+            STEP="Umount ${ETHERDEV}"
+            COMMAND="umount ${ETHERDEV}"
+            MSG_OK="OK"
+            MSG_NOK="Error"
+            ERR=44
+            cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" || ERROR=${?}
+        done
+    fi
+
+    # Unload AOE kernel module
+    if [ ${ERROR} -eq 0 ]; then
+        STEP="Unload AOE Module "
+        COMMAND="rmmod aoe"
+        MSG_OK="OK"
+        MSG_NOK="Error"
+        ERR=45
+        cmd_exec "${STEP}" "${COMMAND}" "${MSG_OK}" "${MSG_NOK}" "${ERR}" && rm -f ${LOCKFILE} || ERROR=${?}
+    fi
+
+    # END
+    if [ ${ERROR} -eq 0 ]; then
+        echo "AOE Module Stopped" && return 0
+    else
+        echo "Fail to stop AOE" && return ${ERROR}
+    fi
+
+}
+
+
+# Function that stops and starts the daemon/service
+do_restart()
+{
+
+    ERROR=0
+
+    do_stop || ERROR=${?}
+
+    # Do not start AOE if stop fail
+    if [ ${ERROR} -eq 0 ]; then
+        do_start || ERROR=${?}
+    fi
+
+    return ${ERROR}
+
+}
+
+
+# Add --debug option as optional 2nd ARG ;)
+[ ! -w ${2} ] && [ ${2} = "--debug" ] && DEBUG=1
+
+
+case "${1}" in
+    "start")
+        do_start && exit 0 || exit ${?}
+        ;;
+    "stop")
+        do_stop && exit 0 || exit ${?}
+        ;;
+    "restart")
+        do_restart && exit 0 || exit ${?}
+        ;;
+    "status")
+        [ -f ${LOCKFILE} ] && echo "AOE is running" || echo "AOE is not running"
+        ;;
+    "version")
+        printf '%s\n' "       AOE Init Script: 08072013"
+        # TODO : To Improve (informe non executable, non exist etc ...)
+        # Thanks to the aoe-version command.
+        [ -x /usr/sbin/aoe-version ] && aoe-version
+        ;;
+    "sancheck")
+        # TODO : To Improve (informe non executable, non exist etc ...)
+        # Man aoe-sancheck for further details.
+        [ -x /usr/sbin/aoe-sancheck ] && aoe-sancheck
+        ;;
+    *)
+        # Startup script usages.
+        echo "usage: $(basename ${0}) {start|stop|restart|status|version|sancheck}" 1>&2
+        ;;
+esac
